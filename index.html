@@ -2443,8 +2443,25 @@ function ac(){actx=actx||new (window.AudioContext||window.webkitAudioContext)();
 // a plain drag-preview (previewNote/previewTone), the note can end up scheduled fully in the past and
 // never audibly play at all. Always await this before computing any time relative to A.currentTime.
 async function ensureAudio(){
-  const A=ac();
-  if(A.state==='suspended'){ try{ await A.resume(); }catch(_){ } }
+  let A=ac();
+  if(A.state==='suspended'){
+    try{
+      // 아이폰/아이패드 사파리는 마이크(getUserMedia/MediaRecorder)를 한 번 쓰고 나면, 녹음이
+      // 끝난 뒤에도 같은 AudioContext가 'suspended' 상태에 갇혀서 resume()이 영영 안 끝나는
+      // 경우가 있음(오디오 세션이 꼬이는 애플 쪽 알려진 문제) — 그래서 녹음 직후에 "▶ 재생"을
+      // 누르면 버튼만 "재생 중…"으로 바뀌고 소리가 전혀 안 나는 것처럼 보임. 일정 시간 안에
+      // resume이 안 끝나면 그 컨텍스트는 포기하고 새 AudioContext를 만들어 이어감.
+      await Promise.race([
+        A.resume(),
+        new Promise((_,rej)=>setTimeout(()=>rej(new Error('resume timeout')), 1200))
+      ]);
+    }catch(_){
+      try{ await A.close(); }catch(_){ }
+      actx=null; musicBus=null; chordBus=null;
+      A=ac();
+      if(A.state==='suspended'){ try{ await A.resume(); }catch(_){ } }
+    }
+  }
   return A;
 }
 // every synthesized sound (melody + metronome) routes through this ONE gain node instead of
