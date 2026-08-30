@@ -2684,11 +2684,24 @@ let recStream=null, recSourceNode=null, recProcessor=null, recSilentGain=null, r
 // 브라우저에서는 예전처럼 직접 PCM을 모아 WAV로 만듦(recMode='pcm').
 let recMode='pcm', recMR=null, recMRChunks=[], recMRMime=null, recExt='wav';
 let recDest=null, recMicSource=null;   // the mixing node that combines the mic with the accompaniment for recording
+let recMicGain=null, recMusicDuck=null, recMicComp=null;   // 녹음 믹스에서만 쓰는 보정: 마이크는 많이
+                                           // 키우고 반주는 크게 낮춰서 노래가 반주 소리에 묻히지 않게
+                                           // 함 (스피커로 나가는 실제 재생 음량에는 영향 없음 — 이
+                                           // 게인들은 recDest로만 연결됨). 마이크를 이만큼 키우면
+                                           // 목소리가 큰 학생은 소리가 찢어질(clip) 수 있어서, 게인
+                                           // 뒤에 컴프레서(리미터 역할)를 하나 붙여 너무 큰 소리만
+                                           // 부드럽게 눌러줌.
+const REC_MIC_BOOST=3.4, REC_MUSIC_DUCK=0.18;
+function makeMicLimiter(A){
+  const c=A.createDynamicsCompressor();
+  c.threshold.value=-18; c.knee.value=12; c.ratio.value=8; c.attack.value=0.003; c.release.value=0.25;
+  return c;
+}
 // "화음 포함" 버전(WC = with chord) — 화음이 실제로 하나라도 배치돼 있을 때만 두 번째 믹스/녹음기를
 // 나란히 돌려서, 기본(화음 없이=NC) 버전과 동시에 두 개의 파일을 만듦. 화음이 하나도 없으면 두
 // 버전이 완전히 같은 소리가 되므로 그냥 만들지 않음(기존 단일 녹음 동작 그대로 유지).
 let recWantsChordVersion=false;
-let recDest2=null, recMicSource2=null;
+let recDest2=null, recMicSource2=null, recMicGain2=null, recMusicDuck2=null, recMicComp2=null;
 let recMR2=null, recMRChunks2=[];
 let recProcessor2=null, recSourceNode2=null, recSilentGain2=null, recChunks2=[];
 let recBlobWC=null, recExtWC='wav';
@@ -2726,19 +2739,31 @@ async function startMicCapture(){
   try{
     recDest=A.createMediaStreamDestination();
     recMicSource=A.createMediaStreamSource(recStream);
-    recMicSource.connect(recDest);
-    getMusicBus().connect(recDest);
-  }catch(_){ recDest=null; recMicSource=null; }
+    recMicGain=A.createGain(); recMicGain.gain.value=REC_MIC_BOOST;
+    recMicComp=makeMicLimiter(A);
+    recMicSource.connect(recMicGain);
+    recMicGain.connect(recMicComp);
+    recMicComp.connect(recDest);
+    recMusicDuck=A.createGain(); recMusicDuck.gain.value=REC_MUSIC_DUCK;
+    getMusicBus().connect(recMusicDuck);
+    recMusicDuck.connect(recDest);
+  }catch(_){ recDest=null; recMicSource=null; recMicGain=null; recMusicDuck=null; recMicComp=null; }
   // 화음이 있으면 "화음 포함" 믹스도 하나 더 만듦 — 마이크는 같은 recStream에서 두 번째
   // MediaStreamSource로 또 뽑아 쓸 수 있음(같은 트랙을 여러 destination에 동시에 연결 가능).
   if(recWantsChordVersion){
     try{
       recDest2=A.createMediaStreamDestination();
       recMicSource2=A.createMediaStreamSource(recStream);
-      recMicSource2.connect(recDest2);
-      getMusicBus().connect(recDest2);
-      getChordBus().connect(recDest2);
-    }catch(_){ recDest2=null; recMicSource2=null; recWantsChordVersion=false; }
+      recMicGain2=A.createGain(); recMicGain2.gain.value=REC_MIC_BOOST;
+      recMicComp2=makeMicLimiter(A);
+      recMicSource2.connect(recMicGain2);
+      recMicGain2.connect(recMicComp2);
+      recMicComp2.connect(recDest2);
+      recMusicDuck2=A.createGain(); recMusicDuck2.gain.value=REC_MUSIC_DUCK;
+      getMusicBus().connect(recMusicDuck2);
+      getChordBus().connect(recMusicDuck2);
+      recMusicDuck2.connect(recDest2);
+    }catch(_){ recDest2=null; recMicSource2=null; recMicGain2=null; recMusicDuck2=null; recMicComp2=null; recWantsChordVersion=false; }
   }
   const outStream = recDest ? recDest.stream : recStream;
   recMRMime=pickMRMime();
@@ -2780,17 +2805,24 @@ function stopMicCapture(){
   if(recSourceNode){ try{recSourceNode.disconnect();}catch(_){ } }
   if(recSilentGain){ try{recSilentGain.disconnect();}catch(_){ } }
   if(recMicSource){ try{recMicSource.disconnect();}catch(_){ } }
+  if(recMicGain){ try{recMicGain.disconnect();}catch(_){ } }
+  if(recMicComp){ try{recMicComp.disconnect();}catch(_){ } }
+  if(recMusicDuck){ try{recMusicDuck.disconnect();}catch(_){ } }
   if(recProcessor2){ try{recProcessor2.disconnect();}catch(_){ } }
   if(recSourceNode2){ try{recSourceNode2.disconnect();}catch(_){ } }
   if(recSilentGain2){ try{recSilentGain2.disconnect();}catch(_){ } }
   if(recMicSource2){ try{recMicSource2.disconnect();}catch(_){ } }
-  if(musicBus && recDest){ try{musicBus.disconnect(recDest);}catch(_){ } }   // stop feeding the melody into this
+  if(recMicGain2){ try{recMicGain2.disconnect();}catch(_){ } }
+  if(recMicComp2){ try{recMicComp2.disconnect();}catch(_){ } }
+  if(recMusicDuck2){ try{recMusicDuck2.disconnect();}catch(_){ } }
+  if(musicBus && recMusicDuck){ try{musicBus.disconnect(recMusicDuck);}catch(_){ } }   // stop feeding the melody into this
                                                                               // (now finished) recording mix — leaves
                                                                               // musicBus's normal connection to the
                                                                               // speakers alone, so playback still works
-  if(musicBus && recDest2){ try{musicBus.disconnect(recDest2);}catch(_){ } }
-  if(chordBus && recDest2){ try{chordBus.disconnect(recDest2);}catch(_){ } }
-  recDest=null; recMicSource=null; recDest2=null; recMicSource2=null;
+  if(musicBus && recMusicDuck2){ try{musicBus.disconnect(recMusicDuck2);}catch(_){ } }
+  if(chordBus && recMusicDuck2){ try{chordBus.disconnect(recMusicDuck2);}catch(_){ } }
+  recDest=null; recMicSource=null; recMicGain=null; recMusicDuck=null; recMicComp=null;
+  recDest2=null; recMicSource2=null; recMicGain2=null; recMusicDuck2=null; recMicComp2=null;
   recMR2=null;
   if(recStream){ recStream.getTracks().forEach(t=>t.stop()); }
 }
@@ -2871,8 +2903,12 @@ async function playFirstNoteThenCountdown(){
   }, (dur+0.35)*1000);
 }
 function runCountdown(){
-  const scoreEl=document.querySelector('.panel.score');
-  if(scoreEl) scoreEl.scrollIntoView({behavior:'smooth', block:'center'});
+  // 녹음이 시작되면(카운트다운이 뜨는 시점) 학생이 이전에 스크롤해서 보고 있던 위치와 상관없이
+  // 항상 첫 번째 마디부터 보이게 함 — 화면 중앙에 맞추면(예전 방식) 악보가 화면보다 길 때 첫 마디가
+  // 위로 잘려서 안 보일 수 있었음. 첫 마디가 없으면(빈 악보 등) 악보 패널 자체를 위쪽 기준으로 맞춤.
+  const firstMeasureEl=document.querySelector('.measure[data-m="0"]');
+  const scoreEl=firstMeasureEl || document.querySelector('.panel.score');
+  if(scoreEl) scoreEl.scrollIntoView({behavior:'smooth', block:'start'});
   closeRecordPopup();   // 노래하는 동안엔 팝업 대신 악보(카라오케 색 변화)가 보이게 함
   let n=4;
   countdownNum.textContent=n;
