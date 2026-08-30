@@ -115,6 +115,10 @@
   .chordPickPopup{position:absolute;top:34px;left:50%;transform:translateX(-50%);width:210px;z-index:30;
     background:var(--paper2);border:1.5px solid var(--soft);border-radius:12px;box-shadow:var(--shadow);
     padding:8px 9px}
+  /* 마지막 줄의 마디에서는 아래로 열면 그 밑에 다음 줄이 없어서 재생 버튼들에 가려짐 — 그때만
+     위쪽(이전 줄과의 간격)으로 뒤집어서 엶. 34px 자리를 위아래로 그대로 거울 대칭시킨 값
+     (.measure height 200px 기준 200-34=166px)이라, 아래로 열 때와 똑같은 높이감으로 열림. */
+  .chordPickPopup--up{top:auto;bottom:166px}
   .chordPopupHead{display:flex;align-items:center;justify-content:space-between;font-family:"Gaegu",cursive;
     font-weight:700;font-size:13.5px;color:var(--ink);margin:0 0 6px}
   .chordPopupClose{background:none;border:none;font-size:14px;color:#a8a397;cursor:pointer;padding:2px 4px;
@@ -1058,11 +1062,12 @@ function chordPopupTilesHTML(){
   });
   return `<div class="chordPalLine">${holdHtml}</div><div class="chordPalLine">${arpHtml}</div>`;
 }
-function chordPopupHTML(mi){
+function chordPopupHTML(mi, flipUp){
+  const upCls = flipUp ? ' chordPickPopup--up' : '';
   if(chordPopupView==='piano'){
     const label = chordPopupSelected.length ? `선택한 음: ${chordPopupSelected.join(', ')}` : '선택한 음: 없음';
     const empty = chordPopupSelected.length ? '' : ' chordTile--empty';
-    return `<div class="chordPickPopup" data-m="${mi}">
+    return `<div class="chordPickPopup${upCls}" data-m="${mi}">
       <div class="chordPopupHead"><span>🎹 화음 만들기</span><button type="button" class="chordPopupClose" data-act="close">✕</button></div>
       ${chordPopupPianoKeysHTML()}
       <div class="pianoCustomRow"><span class="pianoSelectedLabel">${label}</span></div>
@@ -1074,7 +1079,7 @@ function chordPopupHTML(mi){
     </div>`;
   }
   const hasChord = !!chordData[mi];
-  return `<div class="chordPickPopup" data-m="${mi}">
+  return `<div class="chordPickPopup${upCls}" data-m="${mi}">
     <div class="chordPopupHead"><span>🎵 화음 고르기</span><button type="button" class="chordPopupClose" data-act="close">✕</button></div>
     ${chordPopupTilesHTML()}
     <div class="chordPopupBtnRow">
@@ -1111,7 +1116,13 @@ function renderChordPopup(){
   if(chordPopupMi==null) return;
   const meas=board.querySelector(`.measure[data-m="${chordPopupMi}"]`); if(!meas) return;
   const old=board.querySelector('.chordPickPopup'); if(old) old.remove();
-  meas.insertAdjacentHTML('beforeend', chordPopupHTML(chordPopupMi));
+  // 마지막 줄(마지막 .system)의 마디에서 팝업을 아래로 열면, 그 밑에 더 이상 악보 줄이 없어서
+  // 「▶ 메트로놈 후 재생」 같은 아래쪽 버튼들에 가려짐 — 그 줄일 때만 팝업을 위쪽(이전 줄과의
+  // 간격 쪽)으로 뒤집어서 열어줌. 그 외 줄은 원래대로 아래로 열림(다음 줄과의 간격에 들어감).
+  const systems=[...board.querySelectorAll('.system')];
+  const mySystem=meas.closest('.system');
+  const flipUp = systems.length>0 && mySystem===systems[systems.length-1];
+  meas.insertAdjacentHTML('beforeend', chordPopupHTML(chordPopupMi, flipUp));
   if(chordPopupView==='piano') layoutPopupPianoBlacks();
 }
 function openChordPopup(mi){
@@ -1725,6 +1736,13 @@ palgroups.addEventListener('drop',e=>{
 document.querySelectorAll('.tile').forEach(t=>t.draggable=false);
 board.querySelectorAll('.slot').forEach(s=>s.removeAttribute('draggable'));
 let pending=null, drag=null;
+// 아이패드 등에서 화면을 두 손가락으로 핀치줌했다가 다시 줄일 때, 그 손가락 중 하나가 음표
+// 위에 닿으면서 의도치 않게 그 음표를 드래그(음높이 변경/이동)로 잡아버리는 문제 — 손가락이
+// 몇 개나 화면에 닿아 있는지 추적해서, 두 번째(이상) 손가락이 닿는 순간부터는(=핀치줌 같은
+// 다중 터치 제스처로 간주) 음표 드래그를 아예 시작하지 않고, 이미 진행 중이던 한 손가락 드래그가
+// 있었다면 그 자리에서 취소함(pointercancel과 동일하게 — 놓기 전이라 아직 실제로 음이 바뀐 건
+// 아니므로 취소만 해도 원래대로 남아 있음).
+let activePointerIds=new Set();
 let lastPointerX=0, lastPointerY=0, autoScrollRAF=null;
 function autoScrollStep(){
   if(!drag){ autoScrollRAF=null; return; }
@@ -2018,6 +2036,16 @@ function endAccDrag(x,y){
   accDrag.ghost.remove(); accDrag=null; suppressClickOnce();
 }
 document.addEventListener('pointerdown',e=>{
+  const alreadyHadAFingerDown = activePointerIds.size>0;
+  activePointerIds.add(e.pointerId);
+  if(alreadyHadAFingerDown){
+    // 두 번째(이상) 손가락이 닿음 — 핀치줌 같은 다중 터치 제스처로 간주하고, 진행 중이던 드래그가
+    // 있으면 취소, 새 드래그는 시작하지 않음.
+    if(drag){ drag.ghost.remove(); drag=null; clearOver(); clearLivePreview(); hidePitchTag(); }
+    if(accDrag){ accDrag.ghost.remove(); accDrag=null; clearOver(); }
+    pending=null; accPending=null; stopAutoScroll();
+    return;
+  }
   if(e.target.closest('.lyrc')) return;                 // typing lyrics
   const acctile=e.target.closest('.acctile');
   if(acctile){ accPending={code:acctile.dataset.acc, x0:e.clientX, y0:e.clientY}; return; }
@@ -2075,9 +2103,10 @@ document.addEventListener('pointermove',e=>{
   if(accPending && !accDrag && Math.hypot(e.clientX-accPending.x0, e.clientY-accPending.y0)>8){ startAccDrag(e.clientX,e.clientY); }
   if(accDrag){ moveAccDrag(e.clientX,e.clientY); e.preventDefault(); }
 },{passive:false});
-function finish(e){ if(drag){ endDrag(e.clientX,e.clientY); } if(accDrag){ endAccDrag(e.clientX,e.clientY); } pending=null; accPending=null; stopAutoScroll(); }
+function finish(e){ activePointerIds.delete(e.pointerId); if(drag){ endDrag(e.clientX,e.clientY); } if(accDrag){ endAccDrag(e.clientX,e.clientY); } pending=null; accPending=null; stopAutoScroll(); }
 document.addEventListener('pointerup',finish);
-document.addEventListener('pointercancel',()=>{
+document.addEventListener('pointercancel',e=>{
+  activePointerIds.delete(e.pointerId);
   if(drag){drag.ghost.remove();drag=null;clearOver();}
   if(accDrag){accDrag.ghost.remove();accDrag=null;clearOver();}
   pending=null; accPending=null; stopAutoScroll();
@@ -2434,6 +2463,19 @@ function blockIfUnfinished(actionLabel){
 // ---------- audio ----------
 let actx=null, sources=[], timers=[], playing=false;
 function ac(){actx=actx||new (window.AudioContext||window.webkitAudioContext)();return actx;}
+// 아이패드/아이폰 사파리는 AudioContext.resume()이 "브라우저가 진짜 사용자 동작이라고 인정하는"
+// 이벤트 핸들러 안에서 곧바로(중간에 await나 다른 비동기 단계 없이) 불려야 확실히 풀리는 경우가
+// 있음 — 그래서 첫 음표를 손가락으로 끌어다 놓을 때는(그 처리 과정에 여러 단계가 끼어 있어서)
+// resume이 조용히 실패해 소리가 안 나고, 그 뒤에 재생 버튼을 한 번 눌러야(훨씬 더 직접적인 클릭)
+// 비로소 풀려서 그 다음부터는 소리가 남. 페이지에서 일어나는 첫 손가락/마우스 접촉 자체에서
+// 최대한 곧바로 오디오 엔진을 깨워 두면, 그 첫 음표를 놓는 순간부터 바로 소리가 남.
+document.addEventListener('pointerdown', function warmUpAudioOnce(){
+  document.removeEventListener('pointerdown', warmUpAudioOnce);
+  try{
+    const A=ac();
+    if(A.state==='suspended') A.resume().catch(()=>{});
+  }catch(_){ }
+}, {once:true});
 // The very first time the page's AudioContext is created it starts (or gets auto-set to) 'suspended'
 // until a real user gesture resumes it, and resume() is ASYNC. While suspended, A.currentTime stays
 // pinned near 0 — so any code that reads A.currentTime right after calling resume() without waiting
@@ -2842,6 +2884,14 @@ function stopMicCapture(){
   recDest2=null; recMicSource2=null; recMicGain2=null; recMusicDuck2=null; recMicComp2=null;
   recMR2=null;
   if(recStream){ recStream.getTracks().forEach(t=>t.stop()); }
+  // 아이폰/아이패드 사파리는 마이크를 한 번 쓰고 나면(getUserMedia/MediaRecorder), 같은
+  // AudioContext를 계속 쓸 경우 소리 나가는 경로가 꼬여서 그 뒤로 "▶ 재생"을 눌러도 소리가 전혀
+  // 안 나는 경우가 있음(AudioContext.state는 정상('running')이라고 나올 때도 있어서 감지가
+  // 어려움) — 이건 아이폰 오디오 세션 쪽의 알려진 문제라 저희 쪽에서 직접 고칠 수는 없고, 안전하게
+  // 우회하는 방법은 녹음이 끝날 때마다 오디오 엔진을 통째로 새로 만드는 것뿐임. 녹음이 이미 다
+  // 끝난 뒤라(MediaRecorder의 stop 이벤트 이후) 파일에는 전혀 영향 없음.
+  if(actx){ try{ actx.close(); }catch(_){ } }
+  actx=null; musicBus=null; chordBus=null;
 }
 function encodeWav(chunks, sampleRate){
   let length=0; chunks.forEach(c=>length+=c.length);
