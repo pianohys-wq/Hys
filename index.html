@@ -528,6 +528,7 @@
     <div class="recResult" id="recResult" style="display:none">
       <div class="recResultLabel" id="recResultLabelNC">🎵 노래 녹음</div>
       <audio id="recPlayer" controls=""></audio>
+      <button type="button" class="btn-save-audio" id="saveAudioNC" style="margin-top:8px" disabled="">💾 음성 파일로 저장</button>
       <div class="recResultBlock" id="recResultWC" style="display:none">
         <div class="recResultLabel">🎹 화음 포함 녹음</div>
         <audio id="recPlayerWC" controls=""></audio>
@@ -1694,9 +1695,17 @@ board.addEventListener('click',e=>{
   if(selected){
     if(isHeld){ setStatus('여기는 앞의 긴 음표가 이어지는 칸이에요. 앞 음표를 먼저 지워 주세요.'); }
     else if(isFracAtom(selected)){
-      if(addFrac(idx,selected)) setStatus(`<b>${TYPE[selected].label}</b> 놓음. 같은 칸에 이어서 더 놓아 한 박을 채울 수 있어요.`);
+      if(addFrac(idx,selected)){
+        setStatus(`<b>${TYPE[selected].label}</b> 놓음. 같은 칸에 이어서 더 놓아 한 박을 채울 수 있어요.`);
+        const atoms=fracData[idx], last=atoms&&atoms[atoms.length-1];
+        if(last && last.pitch!=null) previewTone(last.pitch);
+      }
     }
-    else if(place(idx,selected)) setStatus(`<b>${TYPE[selected].label}</b> 놓음. 계속 놓거나 다른 음표를 고르세요.`);
+    else if(place(idx,selected)){
+      setStatus(`<b>${TYPE[selected].label}</b> 놓음. 계속 놓거나 다른 음표를 고르세요.`);
+      const arr=pitchData[idx];
+      if(Array.isArray(arr) && arr.length) previewTone(arr[0]);
+    }
   }
   else if(isHeld){ setCursor(null); setStatus('여기는 앞의 긴 음표가 이어지는 칸이에요. 앞 음표를 먼저 지워 주세요.'); }
   else if(slotData[idx]!=null){
@@ -2474,6 +2483,13 @@ document.addEventListener('pointerdown', function warmUpAudioOnce(){
   try{
     const A=ac();
     if(A.state==='suspended') A.resume().catch(()=>{});
+    // resume() alone is sometimes not enough to fully unlock WebKit's audio output on the very
+    // first gesture — actually starting (and instantly stopping) a silent oscillator inside the
+    // SAME synchronous gesture handler is the older, more bulletproof iOS unlock trick, and it's
+    // harmless to also do this every time even where resume() alone would've been enough.
+    const o=A.createOscillator(), g=A.createGain();
+    g.gain.value=0; o.connect(g); g.connect(A.destination);
+    o.start(); o.stop(A.currentTime+0.01);
   }catch(_){ }
 }, {once:true});
 // The very first time the page's AudioContext is created it starts (or gets auto-set to) 'suspended'
@@ -2934,6 +2950,8 @@ function recFileName(variantSuffix, ext){
 function setRecStatus(html){ const el=document.getElementById('recStatus'); if(el) el.innerHTML=html; }
 const recBtn=document.getElementById('recBtn');
 const saveAudioBtn=document.getElementById('saveAudio');
+const saveAudioNCBtn=document.getElementById('saveAudioNC');
+if(saveAudioNCBtn) saveAudioNCBtn.addEventListener('click', ()=>{ saveAudioBtn.click(); });
 const countdownOverlay=document.getElementById('countdownOverlay');
 const countdownNum=document.getElementById('countdownNum');
 
@@ -3022,6 +3040,13 @@ function showRecResult(){
   document.getElementById('recResult').style.display='block';
   saveAudioBtn.disabled=!recBlob;
   saveAudioBtn.textContent = showWC ? '💾 화음 없이 저장' : '💾 음성 파일로 저장';
+  // 녹음 결과 팝업 안(화음 포함 녹음 바로 위)에도 「화음 없이 저장」 버튼을 나란히 보여줌 — 위
+  // topActions의 saveAudioBtn과 상태·문구를 항상 똑같이 맞춰두고, 눌리면 그 버튼 클릭을 그대로
+  // 대신 눌러줌(저장 로직을 새로 만들지 않고 기존 걸 그대로 재사용).
+  if(saveAudioNCBtn){
+    saveAudioNCBtn.disabled=!recBlob;
+    saveAudioNCBtn.textContent=saveAudioBtn.textContent;
+  }
   if(wcBlock){
     if(showWC){
       const urlWC=URL.createObjectURL(recBlobWC);
@@ -3190,6 +3215,7 @@ async function handleRecordClick(){
   recState='countdown';
   document.getElementById('recResult').style.display='none';
   saveAudioBtn.disabled=true; recBlob=null;
+  if(saveAudioNCBtn) saveAudioNCBtn.disabled=true;
   const wcBtn0=document.getElementById('saveAudioWC'); if(wcBtn0) wcBtn0.disabled=true;
   recBlobWC=null;
   playFirstNoteThenCountdown();
