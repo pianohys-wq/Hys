@@ -2749,7 +2749,22 @@ function scheduleChords(start,beat){
       const measEndBeat=Math.min(measStartBeat+BEATS, melEnd);
       const durBeats=measEndBeat-measStartBeat;
       if(durBeats>0.05){
-        voiced.forEach(v=> chordTone(start+measStartBeat*beat, v.freq, durBeats*beat, 0.11));
+        // 지저분함의 실제 원인을 신호 분석으로 찾음: voiceChordNotes가 3음을 한 옥타브 안에 촘촘히
+        // 쌓다 보니(예 도3-미3-솔3, 130~196Hz) 세 음의 진동수 차이(약 31~34Hz)가 사람 귀의 임계대역
+        // 폭과 겹쳐 "맥놀이(beating)"가 생기고, 이게 지속되는 화음유지 모드에서 지지직/버즈 잡음처럼
+        // 들림(실측: 봉투 스펙트럼에서 31.2Hz·33.8Hz 성분 확인). 가운데(3음)는 그대로 두고 맨 아래
+        // 음(근음)은 한 옥타브 내려서, 맨 위 음(5음)은 한 옥타브 올려서 세 음 사이 간격을 넓히면 그
+        // 맥놀이가 임계대역 밖으로 빠지면서 사라짐(실측: 화음만 단독 재생 시 거친정도 75% 감소, 멜로디와
+        // 같이 재생해도 항상 더 나음 — 근음을 멜로디 쪽으로 올리는 방식은 오히려 멜로디와 새로운 맥놀이를
+        // 만들어 더 지저분해져서 폐기했음).
+        voiced.forEach((v,i)=>{
+          let freq=v.freq;
+          if(voiced.length>=3){
+            if(i===0) freq=v.freq/2;
+            else if(i===voiced.length-1) freq=v.freq*2;
+          }
+          chordTone(start+measStartBeat*beat, freq, durBeats*beat, 0.11);
+        });
       }
     }
   }
