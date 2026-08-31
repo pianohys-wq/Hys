@@ -2752,21 +2752,21 @@ function scheduleChords(start,beat){
     if(measStartBeat>=melEnd) continue;   // 멜로디가 이미 완전히 끝난 뒤(뒤쪽 빈 마디)는 화음도 아예 안 냄
     const nl=chordNotesAndLabel(c); if(!nl || !nl.notes.length) continue;
     const voiced=voiceChordNotes(nl.notes, 3);   // 근음을 3옥타브대에 둬서 멜로디보다 낮은 반주 음역으로
-    // 이 마디 자체는(한 음으로 쭉 이어지든, 쉼표로 비어 있든) 화음이 붙어 있는 한 늘 4박 전체를 다
-    // 채움 — 멜로디의 "마지막으로 소리 난 음"이 이 마디 안 어디서 짧게 끝나더라도 화음 반주는 그것과
-    // 상관없이 이 마디의 4박 끝까지 그대로 지속됨(더 이상 melEnd로 마디 중간에서 끊지 않음).
-    const measEndBeat=measStartBeat+BEATS;
     if(c.mode===2){
+      // 펼침화음 마지막 음을 길게 끌어주던 것은 오히려 소리가 지저분해진다고 해서 취소 — 원래대로
+      // 짧은 8분음표 8개(근음-5도-옥타브위근음-옥타브위3도를 두 바퀴)가 맑게 또박또박 울리는 형태로
+      // 되돌림. 이 모드는 예전 그대로 melEnd(멜로디가 실제로 끝나는 지점)를 넘어서는 넘지 않음.
       const pattern=arpPattern(voiced);
-      // 근음-5도-옥타브위근음-옥타브위3도를 8분음표 네 개로 한 바퀴(앞 2박)만 돌고, 남은 2박은 다시
-      // 근음(낮은 옥타브)으로 돌아와 마디 끝까지 그대로 끌어줌 — 예: 1도화음이면 "도솔도미"+"도"(길게).
-      for(let k=0;k<4;k++){
+      for(let k=0;k<8;k++){
         const noteBeat=measStartBeat+k*0.5;
-        chordTone(start+noteBeat*beat, pattern[k], 0.5*beat*0.92, 0.14);
+        if(noteBeat>=melEnd) break;
+        const durBeats=Math.min(0.5, melEnd-noteBeat);
+        chordTone(start+noteBeat*beat, pattern[k%4], durBeats*beat*0.92, 0.14);
       }
-      const tailBeat=measStartBeat+2, tailDur=measEndBeat-tailBeat;
-      if(tailDur>0.01) chordTone(start+tailBeat*beat, pattern[0], tailDur*beat*0.96, 0.14);
     } else {
+      // 화음유지(mode1)는 지난번 요청대로: 이 마디 자체는(한 음으로 쭉 이어지든, 쉼표로 비어 있든)
+      // 화음이 붙어 있는 한 늘 4박 전체를 다 채움 — melEnd로 마디 중간에서 끊지 않음.
+      const measEndBeat=measStartBeat+BEATS;
       const durBeats=measEndBeat-measStartBeat;
       voiced.forEach(v=> chordTone(start+measStartBeat*beat, v.freq, durBeats*beat, 0.11));
     }
