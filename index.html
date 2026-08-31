@@ -2348,6 +2348,47 @@ async function offerDownload(filename, data){
     return {ok:true};
   }catch(_){ return {ok:false, code:'unavailable'}; }
 }
+// 녹음 결과에 "화음 없이"와 "화음 포함" 두 버전이 다 있을 때, 팝업에는 저장 버튼이 하나뿐이므로 그
+// 버튼 한 번으로 두 파일이 다 저장되게 함(따로따로 두 번 누르지 않아도 됨). 파일 공유가 되는
+// 기기에서는 두 파일을 한 번에 같은 공유 시트로 보내고(가능한 경우), 그게 안 되면 각 파일을 순서대로
+// (offerDownload를 두 번) 저장함.
+async function offerDownloadPair(items){
+  if(window.claude && typeof window.claude.use==='function'){
+    try{
+      const downloads=await window.claude.use('downloads');
+      if(downloads){
+        let okCount=0, declined=false;
+        for(const it of items){
+          try{ await downloads.save({filename:it.filename, data:it.data}); okCount++; }
+          catch(err){ if(err && err.code==='declined') declined=true; }
+        }
+        if(okCount===items.length) return {ok:true};
+        if(okCount===0 && declined) return {ok:false, code:'declined'};
+        return {ok:okCount>0, code:okCount>0?'partial':'unavailable'};
+      }
+    }catch(_){ /* use() 자체가 실패하면 아래 방식들로 넘어감 */ }
+  }
+  const blobs=items.map(it=>(it.data instanceof Blob)?it.data:new Blob([it.data]));
+  if(navigator.share && navigator.canShare){
+    try{
+      const files=items.map((it,i)=>new File([blobs[i]], it.filename, {type:blobs[i].type||'application/octet-stream'}));
+      if(navigator.canShare({files})){
+        await navigator.share({files});
+        return {ok:true};
+      }
+    }catch(err){
+      if(err && (err.name==='AbortError')) return {ok:false, code:'declined'};
+      // 한 번에 공유가 안 되면(파일 여러 개 공유를 지원하지 않는 기기 등) 아래에서 하나씩 저장을 시도함
+    }
+  }
+  let okCount=0;
+  for(let i=0;i<items.length;i++){
+    const res=await offerDownload(items[i].filename, blobs[i]);
+    if(res.ok) okCount++;
+  }
+  if(okCount===items.length) return {ok:true};
+  return {ok:okCount>0, code:okCount>0?'partial':'unavailable'};
+}
 document.getElementById('fsave').addEventListener('click',async ()=>{
   if(blockIfUnfinished('파일로 저장할')) return;
   const code=encodeState();
@@ -2685,23 +2726,26 @@ function scheduleChords(start,beat){
   for(let mi=0;mi<MEAS;mi++){
     const c=chordData[mi]; if(!c) continue;
     const measStartBeat=mi*BEATS;
-    if(measStartBeat>=melEnd) continue;   // 멜로디가 이미 끝난 뒤 마디는 화음도 아예 안 냄
+    if(measStartBeat>=melEnd) continue;   // 멜로디가 이미 완전히 끝난 뒤(뒤쪽 빈 마디)는 화음도 아예 안 냄
     const nl=chordNotesAndLabel(c); if(!nl || !nl.notes.length) continue;
     const voiced=voiceChordNotes(nl.notes, 3);   // 근음을 3옥타브대에 둬서 멜로디보다 낮은 반주 음역으로
+    // 이 마디 자체는(한 음으로 쭉 이어지든, 쉼표로 비어 있든) 화음이 붙어 있는 한 늘 4박 전체를 다
+    // 채움 — 멜로디의 "마지막으로 소리 난 음"이 이 마디 안 어디서 짧게 끝나더라도 화음 반주는 그것과
+    // 상관없이 이 마디의 4박 끝까지 그대로 지속됨(더 이상 melEnd로 마디 중간에서 끊지 않음).
+    const measEndBeat=measStartBeat+BEATS;
     if(c.mode===2){
       const pattern=arpPattern(voiced);
-      for(let k=0;k<8;k++){
+      // 근음-5도-옥타브위근음-옥타브위3도를 8분음표 네 개로 한 바퀴(앞 2박)만 돌고, 남은 2박은 다시
+      // 근음(낮은 옥타브)으로 돌아와 마디 끝까지 그대로 끌어줌 — 예: 1도화음이면 "도솔도미"+"도"(길게).
+      for(let k=0;k<4;k++){
         const noteBeat=measStartBeat+k*0.5;
-        if(noteBeat>=melEnd) break;
-        const durBeats=Math.min(0.5, melEnd-noteBeat);
-        chordTone(start+noteBeat*beat, pattern[k%4], durBeats*beat*0.92, 0.14);
+        chordTone(start+noteBeat*beat, pattern[k], 0.5*beat*0.92, 0.14);
       }
+      const tailBeat=measStartBeat+2, tailDur=measEndBeat-tailBeat;
+      if(tailDur>0.01) chordTone(start+tailBeat*beat, pattern[0], tailDur*beat*0.96, 0.14);
     } else {
-      const measEndBeat=Math.min(measStartBeat+BEATS, melEnd);
       const durBeats=measEndBeat-measStartBeat;
-      if(durBeats>0.05){
-        voiced.forEach(v=> chordTone(start+measStartBeat*beat, v.freq, durBeats*beat, 0.11));
-      }
+      voiced.forEach(v=> chordTone(start+measStartBeat*beat, v.freq, durBeats*beat, 0.11));
     }
   }
 }
@@ -2713,8 +2757,17 @@ async function startPlayback(countIn,useMet,btn){
   playing=true; btn.textContent='⏸ 재생 중…';   // set BEFORE the async gap so a second click while we're
                                                   // still waiting for the audio context to resume is treated
                                                   // as "already playing" (stopAll) instead of starting twice
-  const A=await ensureAudio();
+  let A=await ensureAudio();
   if(!playing) return;   // stopAll() was called while we were waiting for the context to resume
+  // 아주 드물게, 이 await로 기다리는 바로 그 순간에 직전 녹음의 뒷정리(마이크 정지 후 비동기로 오디오
+  // 컨텍스트를 닫는 처리 — 위 stopMicCapture 참고)가 끝나면서 전역 오디오 컨텍스트가 새 걸로 통째로
+  // 바뀔 수 있음. 그러면 방금 받은 A는 이미 닫혀 버린 낡은 컨텍스트라서, 그 시계(currentTime) 기준으로
+  // 음 재생 시각을 계산해 두면(아래 t0 등) 정작 음을 실제로 재생할 때는(hit/metro/chordTone이 그때
+  // 그때 ac()로 다시 가져오는 "지금의" 컨텍스트) 시계가 완전히 다른 새 컨텍스트라서 음이 몇 초 뒤
+  // 엉뚱한 미래로 예약돼 사실상 소리가 전혀 안 들리는 것처럼 되어 버림(이게 "녹음하고 나서 악보를
+  // 고치고 다시 재생하면 그 뒤로 계속 재생이 안 된다"는 문제의 진짜 원인이었음). 그런 교체가 있었는지
+  // 확인해서, 있었다면 지금 진짜로 쓰이고 있는 컨텍스트로 한 번 더 확실하게 다시 잡아줌.
+  if(A!==actx){ A=await ensureAudio(); if(!playing) return; }
   const bpm=+tempo.value, beat=60/bpm;
   const t0=A.currentTime+0.18;
 
@@ -2778,7 +2831,7 @@ let recStream=null, recSourceNode=null, recProcessor=null, recSilentGain=null, r
 // 브라우저에서는 예전처럼 직접 PCM을 모아 WAV로 만듦(recMode='pcm').
 let recMode='pcm', recMR=null, recMRChunks=[], recMRMime=null, recExt='wav';
 let recDest=null, recMicSource=null;   // the mixing node that combines the mic with the accompaniment for recording
-let recMicGain=null, recMusicDuck=null, recMicComp=null;   // 녹음 믹스에서만 쓰는 보정: 마이크는 많이
+let recMicGain=null, recMusicDuck=null, recMicComp=null, recSyncDelay=null;   // 녹음 믹스에서만 쓰는 보정: 마이크는 많이
                                            // 키우고 반주는 크게 낮춰서 노래가 반주 소리에 묻히지 않게
                                            // 함 (스피커로 나가는 실제 재생 음량에는 영향 없음 — 이
                                            // 게인들은 recDest로만 연결됨). 마이크를 이만큼 키우면
@@ -2791,11 +2844,25 @@ function makeMicLimiter(A){
   c.threshold.value=-18; c.knee.value=12; c.ratio.value=8; c.attack.value=0.003; c.release.value=0.25;
   return c;
 }
+// 녹음 파일을 들어보면 목소리가 반주보다 살짝 늦게 들리는 문제 — 반주(멜로디)는 오디오 그래프에서
+// 곧바로 recDest로 흘러 들어가서 "예정된 그 시각 그대로" 녹음되지만, 학생이 실제로 귀로 듣는 반주
+// 소리는 스피커/이어폰(특히 블루투스 이어폰)의 출력 지연(outputLatency)만큼 늦게 들림 — 그래서 학생은
+// 그 늦게 들리는 소리에 맞춰 노래하고, 마이크는 그 시점 그대로(입력 지연은 출력 지연보다 훨씬 작음)를
+// 녹음함. 결과적으로 파일 안에서는 목소리가 반주보다 뒤처져 들림. 이를 보정하려고, 녹음 믹스에 한해서만
+// (스피커로 나가는 실제 재생에는 영향 없음) 반주 쪽에 짧은 지연을 넣어 "학생이 실제로 들은 시점"에
+// 최대한 맞춰 녹음되게 함. outputLatency를 브라우저가 알려주면 그 값을, 못 알려주면(사파리 등) 흔한
+// 이어폰 지연값 정도로 추정한 값을 씀.
+function recSyncDelaySeconds(A){
+  const L = (typeof A.outputLatency==='number' && A.outputLatency>0) ? A.outputLatency
+          : (typeof A.baseLatency==='number' && A.baseLatency>0) ? A.baseLatency*4
+          : 0.12;
+  return Math.min(0.35, Math.max(0.03, L));
+}
 // "화음 포함" 버전(WC = with chord) — 화음이 실제로 하나라도 배치돼 있을 때만 두 번째 믹스/녹음기를
 // 나란히 돌려서, 기본(화음 없이=NC) 버전과 동시에 두 개의 파일을 만듦. 화음이 하나도 없으면 두
 // 버전이 완전히 같은 소리가 되므로 그냥 만들지 않음(기존 단일 녹음 동작 그대로 유지).
 let recWantsChordVersion=false;
-let recDest2=null, recMicSource2=null, recMicGain2=null, recMusicDuck2=null, recMicComp2=null;
+let recDest2=null, recMicSource2=null, recMicGain2=null, recMusicDuck2=null, recMicComp2=null, recSyncDelay2=null;
 let recMR2=null, recMRChunks2=[];
 let recProcessor2=null, recSourceNode2=null, recSilentGain2=null, recChunks2=[];
 let recBlobWC=null, recExtWC='wav';
@@ -2840,8 +2907,10 @@ async function startMicCapture(){
     recMicComp.connect(recDest);
     recMusicDuck=A.createGain(); recMusicDuck.gain.value=REC_MUSIC_DUCK;
     getMusicBus().connect(recMusicDuck);
-    recMusicDuck.connect(recDest);
-  }catch(_){ recDest=null; recMicSource=null; recMicGain=null; recMusicDuck=null; recMicComp=null; }
+    recSyncDelay=A.createDelay(1.0); recSyncDelay.delayTime.value=recSyncDelaySeconds(A);
+    recMusicDuck.connect(recSyncDelay);
+    recSyncDelay.connect(recDest);
+  }catch(_){ recDest=null; recMicSource=null; recMicGain=null; recMusicDuck=null; recMicComp=null; recSyncDelay=null; }
   // 화음이 있으면 "화음 포함" 믹스도 하나 더 만듦 — 마이크는 같은 recStream에서 두 번째
   // MediaStreamSource로 또 뽑아 쓸 수 있음(같은 트랙을 여러 destination에 동시에 연결 가능).
   if(recWantsChordVersion){
@@ -2856,8 +2925,10 @@ async function startMicCapture(){
       recMusicDuck2=A.createGain(); recMusicDuck2.gain.value=REC_MUSIC_DUCK;
       getMusicBus().connect(recMusicDuck2);
       getChordBus().connect(recMusicDuck2);
-      recMusicDuck2.connect(recDest2);
-    }catch(_){ recDest2=null; recMicSource2=null; recMicGain2=null; recMusicDuck2=null; recMicComp2=null; recWantsChordVersion=false; }
+      recSyncDelay2=A.createDelay(1.0); recSyncDelay2.delayTime.value=recSyncDelaySeconds(A);
+      recMusicDuck2.connect(recSyncDelay2);
+      recSyncDelay2.connect(recDest2);
+    }catch(_){ recDest2=null; recMicSource2=null; recMicGain2=null; recMusicDuck2=null; recMicComp2=null; recSyncDelay2=null; recWantsChordVersion=false; }
   }
   const outStream = recDest ? recDest.stream : recStream;
   recMRMime=pickMRMime();
@@ -2902,6 +2973,7 @@ function stopMicCapture(){
   if(recMicGain){ try{recMicGain.disconnect();}catch(_){ } }
   if(recMicComp){ try{recMicComp.disconnect();}catch(_){ } }
   if(recMusicDuck){ try{recMusicDuck.disconnect();}catch(_){ } }
+  if(recSyncDelay){ try{recSyncDelay.disconnect();}catch(_){ } }
   if(recProcessor2){ try{recProcessor2.disconnect();}catch(_){ } }
   if(recSourceNode2){ try{recSourceNode2.disconnect();}catch(_){ } }
   if(recSilentGain2){ try{recSilentGain2.disconnect();}catch(_){ } }
@@ -2909,14 +2981,15 @@ function stopMicCapture(){
   if(recMicGain2){ try{recMicGain2.disconnect();}catch(_){ } }
   if(recMicComp2){ try{recMicComp2.disconnect();}catch(_){ } }
   if(recMusicDuck2){ try{recMusicDuck2.disconnect();}catch(_){ } }
+  if(recSyncDelay2){ try{recSyncDelay2.disconnect();}catch(_){ } }
   if(musicBus && recMusicDuck){ try{musicBus.disconnect(recMusicDuck);}catch(_){ } }   // stop feeding the melody into this
                                                                               // (now finished) recording mix — leaves
                                                                               // musicBus's normal connection to the
                                                                               // speakers alone, so playback still works
   if(musicBus && recMusicDuck2){ try{musicBus.disconnect(recMusicDuck2);}catch(_){ } }
   if(chordBus && recMusicDuck2){ try{chordBus.disconnect(recMusicDuck2);}catch(_){ } }
-  recDest=null; recMicSource=null; recMicGain=null; recMusicDuck=null; recMicComp=null;
-  recDest2=null; recMicSource2=null; recMicGain2=null; recMusicDuck2=null; recMicComp2=null;
+  recDest=null; recMicSource=null; recMicGain=null; recMusicDuck=null; recMicComp=null; recSyncDelay=null;
+  recDest2=null; recMicSource2=null; recMicGain2=null; recMusicDuck2=null; recMicComp2=null; recSyncDelay2=null;
   recMR2=null;
   if(recStream){ recStream.getTracks().forEach(t=>t.stop()); }
   // 아이폰/아이패드 사파리는 마이크를 한 번 쓰고 나면(getUserMedia/MediaRecorder), 같은
@@ -3261,11 +3334,27 @@ saveAudioBtn.addEventListener('click', async ()=>{
 document.getElementById('saveAudioWC').addEventListener('click', async ()=>{
   if(!recBlobWC) return;
   if(blockIfUnfinished('음성 파일로 저장할')) return;
-  const filename=recFileName('화음포함', recExtWC);
+  const filenameWC=recFileName('화음포함', recExtWC);
+  // 팝업엔 저장 버튼이 이거 하나뿐이니, 화음 없는 버전(recBlob)도 같이 있으면 한 번에 둘 다 저장함.
+  if(recBlob){
+    const filenameNC=recFileName('화음없이', recExt);
+    setRecStatus('저장하는 중… (화음 포함 + 화음 없이)');
+    const res=await offerDownloadPair([{filename:filenameNC, data:recBlob}, {filename:filenameWC, data:recBlobWC}]);
+    if(res.ok){
+      setRecStatus(`저장했어요: ${filenameNC}, ${filenameWC}`);
+    } else if(res.code==='declined'){
+      setRecStatus('저장을 취소했어요.');
+    } else if(res.code==='partial'){
+      setRecStatus('두 개 중 하나만 저장됐어요 — 다시 눌러서 나머지도 저장해 보세요.');
+    } else {
+      setRecStatus('이 화면에서는 음성 파일 저장이 아직 안 될 수 있어요.');
+    }
+    return;
+  }
   setRecStatus('저장하는 중… (화음 포함)');
-  const res=await offerDownload(filename, recBlobWC);
+  const res=await offerDownload(filenameWC, recBlobWC);
   if(res.ok){
-    setRecStatus(`저장했어요: ${filename}`);
+    setRecStatus(`저장했어요: ${filenameWC}`);
   } else if(res.code==='declined'){
     setRecStatus('저장을 취소했어요.');
   } else {
