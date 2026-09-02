@@ -478,6 +478,26 @@
 
 <script>
 (function(){
+  // Google Sheets(Apps Script 웹앱)를 결과 저장소로 사용한다.
+  const STORAGE_API_URL = 'https://script.google.com/a/macros/samjeong.ms.kr/s/AKfycbwXrfe_yKmYVdWT-UGGqel-l1kx6I4YwypoXXg0nx4dcEZZdvQ1nkLDnWU6hX2utD9n/exec';
+
+  async function storageRequest(action, params){
+    const res = await fetch(STORAGE_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ action }, params))
+    });
+    if (!res.ok) throw new Error('storage request failed: ' + res.status);
+    return res.json();
+  }
+
+  window.storage = {
+    list: (prefix) => storageRequest('list', { prefix }),
+    get: (key) => storageRequest('get', { key }),
+    set: (key, value) => storageRequest('set', { key, value }),
+    delete: (key) => storageRequest('delete', { key })
+  };
+
   const NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
   const BLACK_PCS = new Set([1,3,6,8,10]);
 
