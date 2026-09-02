@@ -482,11 +482,8 @@
   const STORAGE_API_URL = 'https://script.google.com/macros/s/AKfycbyOeVTGbU1UDMvM87VEShX708a-mRxDGv3BiU_4rfRxmiSWAs9BuxKQjPpe4s2mIyHG/exec';
 
   async function storageRequest(action, params){
-    const res = await fetch(STORAGE_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({ action }, params))
-    });
+    const qs = new URLSearchParams(Object.assign({ action }, params)).toString();
+    const res = await fetch(STORAGE_API_URL + '?' + qs);
     if (!res.ok) throw new Error('storage request failed: ' + res.status);
     return res.json();
   }
